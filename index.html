@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maze Runner</title>
+<style>
+  :root { --bg:#f4f1ea; --fg:#2b2b2b; --wall:#2b2b2b; --player:#e4572e; --goal:#2a9d8f; --trail:#f3c98b; --panel:#fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16181d; --fg:#e8e6e1; --wall:#d9d6cf; --player:#ff7a50; --goal:#3cc7b5; --trail:#5a4a2f; --panel:#22252c; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; background:var(--bg); color:var(--fg);
+         font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+         display:flex; flex-direction:column; align-items:center; padding:16px; gap:12px; }
+  h1 { margin:4px 0 0; font-size:1.6rem; }
+  .bar { display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:center; }
+  .stat { background:var(--panel); padding:6px 12px; border-radius:8px; font-variant-numeric:tabular-nums; }
+  button, select { font:inherit; padding:6px 14px; border-radius:8px; border:1px solid var(--fg);
+                   background:var(--panel); color:var(--fg); cursor:pointer; }
+  canvas { background:var(--panel); border-radius:10px; max-width:100%; height:auto; touch-action:none; }
+  .pad { display:grid; grid-template-columns:repeat(3,56px); gap:6px; }
+  .pad button { height:56px; font-size:1.3rem; padding:0; }
+  .pad .blank { visibility:hidden; }
+  #msg { min-height:1.4em; font-weight:600; color:var(--goal); }
+  .hint { opacity:.7; font-size:.9rem; margin:0; }
+</style>
+</head>
+<body>
+  <h1>Maze Runner</h1>
+  <div class="bar">
+    <span class="stat">Level <b id="level">1</b></span>
+    <span class="stat">Moves <b id="moves">0</b></span>
+    <span class="stat">Time <b id="time">0.0</b>s</span>
+    <select id="size" aria-label="Maze size">
+      <option value="10">Small</option>
+      <option value="15" selected>Medium</option>
+      <option value="22">Large</option>
+    </select>
+    <button id="new">New maze</button>
+  </div>
+  <canvas id="c" width="600" height="600"></canvas>
+  <div id="msg"></div>
+  <div class="pad" aria-label="Direction pad">
+    <span class="blank"></span><button data-d="up">▲</button><span class="blank"></span>
+    <button data-d="left">◀</button><button data-d="down">▼</button><button data-d="right">▶</button>
+  </div>
+  <p class="hint">Arrow keys / WASD, swipe, or the pad. Reach the green square.</p>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const DIRS = { up:[0,-1,0], right:[1,0,1], down:[0,1,2], left:[-1,0,3] }; // dx, dy, wall index
+  const OPP = [2,3,0,1];
+
+  let N, cells, player, goal, trail, moves, startTime, timer, won, level = 1;
+
+  const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+  // Recursive-backtracker maze generation (iterative to avoid stack limits)
+  function generate(n) {
+    const grid = Array.from({length:n*n}, () => ({ walls:[true,true,true,true], seen:false }));
+    const at = (x,y) => grid[y*n+x];
+    const stack = [[0,0]];
+    at(0,0).seen = true;
+    while (stack.length) {
+      const [x,y] = stack[stack.length-1];
+      const options = Object.values(DIRS)
+        .map(([dx,dy,w]) => [x+dx, y+dy, w])
+        .filter(([nx,ny]) => nx>=0 && ny>=0 && nx<n && ny<n && !at(nx,ny).seen);
+      if (!options.length) { stack.pop(); continue; }
+      const [nx,ny,w] = options[Math.floor(Math.random()*options.length)];
+      at(x,y).walls[w] = false;
+      at(nx,ny).walls[OPP[w]] = false;
+      at(nx,ny).seen = true;
+      stack.push([nx,ny]);
+    }
+    return grid;
+  }
+
+  function newMaze() {
+    N = parseInt($('size').value, 10);
+    cells = generate(N);
+    player = {x:0, y:0};
+    goal = {x:N-1, y:N-1};
+    trail = new Set(['0,0']);
+    moves = 0; won = false; startTime = null;
+    clearInterval(timer);
+    $('moves').textContent = 0;
+    $('time').textContent = '0.0';
+    $('level').textContent = level;
+    $('msg').textContent = '';
+    draw();
+  }
+
+  function draw() {
+    const size = canvas.width, pad = 10, cs = (size - pad*2) / N;
+    ctx.clearRect(0,0,size,size);
+
+    ctx.fillStyle = css('--trail');
+    trail.forEach(k => {
+      const [x,y] = k.split(',').map(Number);
+      ctx.fillRect(pad+x*cs, pad+y*cs, cs, cs);
+    });
+
+    ctx.fillStyle = css('--goal');
+    ctx.fillRect(pad+goal.x*cs+cs*0.15, pad+goal.y*cs+cs*0.15, cs*0.7, cs*0.7);
+
+    ctx.strokeStyle = css('--wall');
+    ctx.lineWidth = Math.max(2, cs/8);
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (let y=0; y<N; y++) for (let x=0; x<N; x++) {
+      const w = cells[y*N+x].walls, x0 = pad+x*cs, y0 = pad+y*cs;
+      if (w[0]) { ctx.moveTo(x0,y0); ctx.lineTo(x0+cs,y0); }
+      if (w[1]) { ctx.moveTo(x0+cs,y0); ctx.lineTo(x0+cs,y0+cs); }
+      if (w[2]) { ctx.moveTo(x0,y0+cs); ctx.lineTo(x0+cs,y0+cs); }
+      if (w[3]) { ctx.moveTo(x0,y0); ctx.lineTo(x0,y0+cs); }
+    }
+    ctx.stroke();
+
+    ctx.fillStyle = css('--player');
+    ctx.beginPath();
+    ctx.arc(pad+player.x*cs+cs/2, pad+player.y*cs+cs/2, cs*0.32, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  function move(dir) {
+    if (won || !DIRS[dir]) return;
+    const [dx,dy,w] = DIRS[dir];
+    if (cells[player.y*N+player.x].walls[w]) return;
+    if (startTime === null) {
+      startTime = performance.now();
+      timer = setInterval(() => $('time').textContent = ((performance.now()-startTime)/1000).toFixed(1), 100);
+    }
+    player.x += dx; player.y += dy;
+    trail.add(player.x+','+player.y);
+    $('moves').textContent = ++moves;
+    draw();
+    if (player.x === goal.x && player.y === goal.y) win();
+  }
+
+  function win() {
+    won = true;
+    clearInterval(timer);
+    const t = ((performance.now()-startTime)/1000).toFixed(1);
+    $('time').textContent = t;
+    $('msg').textContent = `Solved in ${moves} moves and ${t}s! Next maze in a moment…`;
+    level++;
+    setTimeout(newMaze, 1800);
+  }
+
+  const KEYS = { ArrowUp:'up', ArrowDown:'down', ArrowLeft:'left', ArrowRight:'right',
+                 w:'up', s:'down', a:'left', d:'right', W:'up', S:'down', A:'left', D:'right' };
+  document.addEventListener('keydown', e => {
+    if (KEYS[e.key]) { e.preventDefault(); move(KEYS[e.key]); }
+  });
+  document.querySelectorAll('.pad button').forEach(b => b.addEventListener('click', () => move(b.dataset.d)));
+
+  let touch = null;
+  canvas.addEventListener('touchstart', e => { touch = e.touches[0]; }, {passive:true});
+  canvas.addEventListener('touchend', e => {
+    if (!touch) return;
+    const t = e.changedTouches[0], dx = t.clientX-touch.clientX, dy = t.clientY-touch.clientY;
+    if (Math.max(Math.abs(dx),Math.abs(dy)) > 20)
+      move(Math.abs(dx) > Math.abs(dy) ? (dx>0?'right':'left') : (dy>0?'down':'up'));
+    touch = null;
+  });
+
+  $('new').addEventListener('click', () => { level = 1; newMaze(); });
+  $('size').addEventListener('change', () => { level = 1; newMaze(); });
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+
+  newMaze();
+})();
+</script>
+</body>
+</html>
